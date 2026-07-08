@@ -1,0 +1,8 @@
+_base_: base.yaml
+
+name: cnn
+
+architecture:
+  type: simple_cnn
+  channels: [40, 80, 160]   # ~146k params. count_params.py로 ViT와 band 매칭 확인 후 조정.
+  # dropout 은 base.regularization.dropout 를 따름 (현재 0.0)

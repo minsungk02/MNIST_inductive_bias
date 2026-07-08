@@ -1,0 +1,53 @@
+# =====================================================================
+# base.yaml  —  SINGLE SOURCE OF TRUTH
+# 아키텍처를 제외한 모든 통제조건이 여기 고정된다.
+# cnn.yaml / vit.yaml 은 이 파일을 상속(_base_)하고 architecture 블록만 덮어쓴다.
+# =====================================================================
+
+seed: 42                 # init / shuffle / split 전부 이 seed로 통제
+
+data:
+  root: ./data
+  batch_size: 128
+  val_size: 6000         # train 60k -> pool 54k / val 6k (seed 고정). val은 모든 subset 크기에서 고정.
+  num_workers: 4
+  mean: 0.1307           # MNIST 표준 정규화 (양쪽 동일)
+  std: 0.3081
+  augment: false         # 순수 비교: train 증강 없음 (robustness는 test-time에만)
+
+  # --- 데이터 효율성 축 ---
+  subset_size: null      # null = full pool(54k). 100/500/1000/5000 등으로 제한.
+  subset_seed: 0         # subset 샘플링 seed (소규모 n에선 여러 개 필수)
+
+optim:
+  name: adamw            # ViT 민감도 대응 -> 양쪽 동일 (합집합 원칙)
+  lr: 0.0003
+  weight_decay: 0.05
+  betas: [0.9, 0.999]
+
+schedule:
+  name: cosine
+  warmup_epochs: 3       # ViT엔 사실상 필수, CNN엔 무해 -> 합집합으로 채택
+
+train:
+  # full 데이터 기본 예산
+  max_epochs: 50
+  patience: 8
+  # subset(작은 n)은 epoch당 step이 적어 수렴까지 더 필요 -> 별도 예산
+  subset_max_epochs: 200
+  subset_patience: 25
+  label_smoothing: 0.0
+  monitor: val_loss      # best = val_loss 최소 체크포인트 (양쪽 동일 규칙)
+  min_delta: 0.0
+
+regularization:
+  dropout: 0.0           # 완전 off (대칭). 나중에 켜려면 값만 변경.
+
+# robustness 평가 스윕 (test-time only)
+robustness:
+  shift_px: [0, 1, 2, 3, 4]        # 핵심: translation-equivariance clean test
+  rotation_deg: [0, 15, 30, 45]    # exploratory: 둘 다 prior 없음 확인
+  noise_std: [0.0, 0.25, 0.5, 1.0] # exploratory: 일반 OOD robustness
+
+output:
+  dir: ./experiments

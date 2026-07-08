@@ -1,0 +1,12 @@
+_base_: base.yaml
+
+name: vit
+
+architecture:
+  type: vit
+  patch_size: 7        # 28/7 = 4 -> 16 patches (+cls = 17 tokens)
+  embed_dim: 64
+  depth: 4             # ~139k params. CNN과 band 매칭 (count_params.py로 확인).
+  heads: 4
+  mlp_ratio: 2.0       # hidden = 64*2 = 128
+  # dropout 은 base.regularization.dropout 를 따름 (현재 0.0)

@@ -1,0 +1,22 @@
+# data (서버에서 자동 다운로드)
+data/
+
+# 실험 산출물 (체크포인트/곡선/로그)
+experiments/*
+!experiments/.gitkeep
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# checkpoints
+*.pt
+*.pth
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/

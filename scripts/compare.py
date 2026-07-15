@@ -128,6 +128,53 @@ def plot_train_val_gap(runs):
                 print(f"{arch:<6}{size:>8}{np.mean(agg[arch][size]):>10.3f}")
 
 
+def plot_gap_vs_size(runs):
+    """4b) 과적합/암기의 '강한' 표현: subset 크기축 generalization gap(@best) 곡선.
+
+    full run의 gap 곡선(compare_train_val_gap.png)은 full에선 gap이 작아 신호가 약하다.
+    대신 gap@best 를 '데이터 크기'축으로 그리면 'ViT는 작은 n에서 암기(gap 큼),
+    n이 커지면 CNN과 수렴'이 선명하다. CNN-ViT 격차는 중간 n(~300)에서 최대.
+    오른쪽 패널: 그 최대격차 크기에서 train/val 곡선이 갈라지는 모습(=암기 signature).
+    """
+    agg = defaultdict(lambda: defaultdict(list))       # arch -> size -> [gap_at_best]
+    first = {}                                          # (arch,size) -> history(첫 seed)
+    for h in runs:
+        size = h.get("subset_size") or 54000
+        agg[h["arch"]][size].append(train_val_gap(h)["gap_at_best"])
+        first.setdefault((h["arch"], size), h)
+    if not agg:
+        return
+
+    fig, ax = plt.subplots(1, 2, figsize=(14, 5.2))
+    for arch in sorted(agg):
+        sizes = sorted(agg[arch])
+        means = [np.mean(agg[arch][s]) for s in sizes]
+        stds = [np.std(agg[arch][s]) for s in sizes]
+        ax[0].errorbar(sizes, means, yerr=stds, marker="o", capsize=3, label=arch)
+    ax[0].set_xscale("log")
+    ax[0].set_xlabel("train examples (log)")
+    ax[0].set_ylabel("generalization gap = train_acc - val_acc (@best)")
+    ax[0].set_title("Generalization gap vs training-set size")
+    ax[0].grid(alpha=0.3); ax[0].legend()
+
+    # CNN·ViT 둘 다 있는 크기 중 격차 최대인 n에서 train/val 곡선 발산 시각화
+    common = sorted(set(agg.get("cnn", {})) & set(agg.get("vit", {})))
+    if common:
+        s_star = max(common, key=lambda s: np.mean(agg["vit"][s]) - np.mean(agg["cnn"][s]))
+        for arch, c in [("cnn", "tab:blue"), ("vit", "tab:orange")]:
+            h = first.get((arch, s_star))
+            if not h:
+                continue
+            ep = range(1, len(h["train_acc"]) + 1)
+            ax[1].plot(ep, h["train_acc"], color=c, ls="-", label=f"{arch} train")
+            ax[1].plot(ep, h["val_acc"], color=c, ls="--", label=f"{arch} val")
+        ax[1].set_title(f"Why (n={s_star}): ViT train->~1.0 while val stalls = memorization")
+        ax[1].set_xlabel("epoch"); ax[1].set_ylabel("accuracy")
+        ax[1].grid(alpha=0.3); ax[1].legend(fontsize=9, loc="lower right")
+    fig.tight_layout()
+    fig.savefig(EXP / "compare_train_val_gap_vs_size.png", dpi=130); plt.close(fig)
+
+
 def plot_equivariance(analyses):
     """3) shift 내부표현 변화율 (CNN vs ViT overlay)."""
     have = [a for a in analyses if a.get("equivariance")]
@@ -193,12 +240,14 @@ def main():
 
     analyses = load_analyses()
     plot_train_val_gap(runs)          # 4) history 기반
+    plot_gap_vs_size(runs)            # 4b) 강한 표현: gap vs data size
     plot_equivariance(analyses)       # 3)
     plot_attention_distance(analyses) # 1)
     plot_erf(analyses)                # 2)
 
     print_table(runs)
     print("\nsaved -> experiments/compare_{convergence,data_efficiency,robustness}.png")
+    print("saved -> experiments/compare_train_val_gap_vs_size.png")
     if analyses:
         print("saved -> experiments/compare_{train_val_gap,equivariance,attention_distance,erf}.png")
 

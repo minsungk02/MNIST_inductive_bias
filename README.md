@@ -96,16 +96,41 @@ src/
   engine.py       train/val 루프, warmup+cosine, early stopping, best=min val_loss
   robustness.py   test-time shift/rotation/noise perturbation
   utils.py        seed, device 자동선택, param count
+  analysis.py     진단지표 4종 함수 (attention distance/ERF/equivariance/train-val gap)
 scripts/
   count_params.py     ★ param band 게이트
   train.py            학습(full/subset) + history/곡선
   evaluate.py         최종 test (1회)
   eval_robustness.py  robustness 스윕
   visualize.py        Grad-CAM / attention rollout
-  compare.py          집계 -> 비교 곡선/표
+  analyze.py          진단지표: attention distance / ERF / equivariance (재학습X)
+  compare.py          집계 -> 비교 곡선/표 (+ train-val gap / 진단 overlay)
   run_all.sh          전체 오케스트레이션
 experiments/  (gitignore) 체크포인트·곡선·json
 ```
+
+## 진단 지표 (2차 분석 · 재학습 없음)
+
+1차 결과(데이터효율·shift)를 **아키텍처로 설명**하기 위해, 저장된 full 체크포인트(`best.pt`)와
+`history.json` 만으로 뽑는 4개 진단 지표. `scripts/analyze.py`(①②③) + `compare.py`(④ 집계).
+
+| 지표 | 무엇을 재나 | 무엇을 말해주나 | 어디서 |
+|---|---|---|---|
+| **① Attention distance** | ViT 블록별 attention의 패치 공간거리 | 낮을수록 국소(CNN다움) — ViT가 locality를 배웠나 | `analyze.py` (ViT) |
+| **② ERF** | 중앙 유닛의 입력 gradient 히트맵 | CNN 조밀 / ViT 광역 — 국소성 직접 시각화 | `analyze.py` (both) |
+| **③ Equivariance error** | shift 시 분류직전 표현 변화율 ‖g(shift x)−g(x)‖/‖g(x)‖ | CNN≈불변, ViT 급증 — shift 붕괴의 내부근거 | `analyze.py` (both) |
+| **④ Train-val gap** | `history.json`의 train_acc−val_acc | 클수록 암기 — 소량서 ViT 열세의 이유 | `compare.py` (history) |
+
+```bash
+# full 학습(Phase 1)과 robustness(Phase 2)가 끝난 뒤
+python scripts/analyze.py --config configs/cnn.yaml --seed 42
+python scripts/analyze.py --config configs/vit.yaml --seed 42
+python scripts/compare.py      # ④ 집계 + ①②③ CNN/ViT overlay 그림
+```
+
+산출: 각 run에 `analysis.json`, `erf.png`, `equivariance.png`, (`attention_distance.png`, ViT),
+집계로 `compare_{train_val_gap,equivariance,attention_distance,erf}.png`.
+`run_all.sh` Phase 2에 `analyze.py`가 포함돼 전체 파이프라인에서 자동 실행된다.
 
 ## 해석 시 caveat
 

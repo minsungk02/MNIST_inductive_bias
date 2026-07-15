@@ -25,12 +25,13 @@ for cfg in "${CONFIGS[@]}"; do
   run scripts/train.py --config "$cfg" --seed $SEED
 done
 
-# --- Phase 2: full 기반 후처리 (robustness / test / 해석) ---
-log "===== Phase 2: robustness / test / interpret ====="
+# --- Phase 2: full 기반 후처리 (robustness / test / 해석 / 진단지표) ---
+log "===== Phase 2: robustness / test / interpret / analyze ====="
 for cfg in "${CONFIGS[@]}"; do
   run scripts/eval_robustness.py --config "$cfg" --seed $SEED
   run scripts/evaluate.py       --config "$cfg" --seed $SEED
   run scripts/visualize.py      --config "$cfg" --seed $SEED --n 8
+  run scripts/analyze.py        --config "$cfg" --seed $SEED   # 진단지표: equivariance/ERF/attention distance
 done
 
 # --- Phase 3: 데이터 효율성 스윕 (가장 긴 구간) ---
@@ -43,7 +44,7 @@ for cfg in "${CONFIGS[@]}"; do
   done
 done
 
-# --- Phase 4: 집계 ---
+# --- Phase 4: 집계 (train-val gap 포함) ---
 log "===== Phase 4: aggregate ====="
 python scripts/compare.py
 log "ALL DONE. see experiments/compare_*.png"

@@ -1,4 +1,4 @@
-"""진단 지표 모듈 — 저장된 체크포인트/history만으로 뽑는 4개 분석 지표.
+"""진단 지표 모듈 — 저장된 체크포인트/history만으로 뽑는 분석 지표.
 
 전부 forward / autograd 만 사용한다 (재학습 없음). best.pt 로딩이면 충분.
 
@@ -6,11 +6,18 @@
   2) effective_receptive_field(...) 중앙 유닛의 입력 gradient 히트맵 -> 국소성 시각화
   3) equivariance_error(...)        shift 시 내부표현 변화율         -> shift 붕괴의 내부근거
   4) train_val_gap(...)             history의 train-val 곡선          -> 과적합/암기 정량화
+  5) erf_radius_by_depth(...)       블록별 ERF RMS 반경               -> locality가 쌓이는 과정
+  6) frequency_response(...)        블록별 고주파 비율                -> Conv=high-pass / MSA=low-pass
+  7) pos_embed_similarity(...)      ViT pos_embed cosine 유사도 [P,P] -> 2D locality를 '배웠는가'
+     pos_embed_locality(...)        위 유사도의 locality 점수(스칼라)
+  8) penultimate_pca2d(...)         분류 직전 표현의 2D PCA           -> 표현공간 클러스터 구조
+  9) predict_all(...)               test 예측 캐시                    -> confusion/오류겹침 분석용
 
 지표별로 어느 결과를 설명하는지:
-  - 1,2 : 데이터효율 격차(=CNN의 locality prior)의 직접 근거
-  - 3   : shift 정확도 붕괴(97.6->16.8)의 내부표현 근거
-  - 4   : 소량 데이터에서 ViT가 지는 이유(=암기) 정량화
+  - 1,2,5,7 : 데이터효율 격차(=CNN의 locality prior)의 직접 근거
+  - 3       : shift 정확도 붕괴(97.6->16.8)의 내부표현 근거
+  - 4,8     : 소량 데이터에서 ViT가 지는 이유(=암기) 정량화/시각화
+  - 9       : 두 모델이 '다른' 실수를 하는가 (오류 겹침)
 """
 from __future__ import annotations
 import numpy as np
@@ -251,3 +258,85 @@ def frequency_response(model, loader, device, arch, max_batches: int = 20):
     for hk in hooks:
         hk.remove()
     return [float(np.mean(v)) for v in fracs]
+
+
+# ------------------------------------------------------------------ #
+# 7) pos_embed 유사도 (ViT 전용, 가중치만 — 데이터/GPU 불필요)
+# ------------------------------------------------------------------ #
+@torch.no_grad()
+def pos_embed_similarity(model) -> np.ndarray:
+    """패치 pos_embed 간 cosine 유사도 [P,P] (CLS 제외).
+
+    학습이 2D 격자 구조를 '배웠다면' 가까운 패치끼리 유사도가 높아
+    거리에 따라 감소하는 밴드 구조가 보인다 (Raghu et al. 2021 스타일).
+    n이 작으면 init(trunc_normal std0.02) 근처라 구조 없는 노이즈 -> 그 자체가 신호.
+    """
+    pe = model.pos_embed[0, 1:].detach().float().cpu()               # [P,E]
+    pe = pe / pe.norm(dim=1, keepdim=True).clamp_min(1e-9)
+    return (pe @ pe.T).numpy()
+
+
+def pos_embed_locality(sim: np.ndarray, grid: int) -> float:
+    """유사도-거리 locality 점수: off-diagonal 쌍에서 corr(sim, -patch_distance).
+
+    +1 에 가까울수록 '가까운 패치=유사한 embedding'(2D locality 학습),
+    0 이면 무구조(init 수준). 4×4 격자에서도 안정적인 스칼라 요약.
+    """
+    D = _patch_distance_matrix(grid).numpy()
+    mask = ~np.eye(sim.shape[0], dtype=bool)
+    s, d = sim[mask], -D[mask]
+    s = s - s.mean(); d = d - d.mean()
+    denom = np.sqrt((s ** 2).sum() * (d ** 2).sum())
+    return float((s * d).sum() / max(denom, 1e-12))
+
+
+# ------------------------------------------------------------------ #
+# 8) 분류 직전 표현의 2D PCA (CNN/ViT 공통) — 표현공간 클러스터 구조
+# ------------------------------------------------------------------ #
+@torch.no_grad()
+def penultimate_pca2d(model, loader, device, max_images: int = 2000):
+    """head 입력 표현(equivariance와 동일한 g(x))을 모아 2D PCA 좌표를 반환.
+
+    CNN: GAP 직후 [B,160] / ViT: 최종 LN 후 CLS [B,64].
+    작은 n에서 'CNN은 이미 클러스터 / ViT는 뭉개짐'을 산점도로 보인다.
+    loader는 shuffle=False 가정 -> 모든 run에서 같은 이미지가 같은 점.
+    반환: (coords [N,2] np, labels [N] np, explained_var_ratio [2] np)
+    """
+    model.eval()
+    cap = {}
+    h = model.head.register_forward_hook(lambda m, i, o: cap.__setitem__("g", i[0].detach()))
+    feats, labels, n = [], [], 0
+    for x, y in loader:
+        if n >= max_images:
+            break
+        x = x[: max_images - n]
+        model(x.to(device))
+        feats.append(cap["g"].float().cpu())
+        labels.append(y[: max_images - n])
+        n += x.size(0)
+    h.remove()
+    F = torch.cat(feats, 0)                                          # [N,D]
+    F = F - F.mean(dim=0, keepdim=True)
+    U, S, V = torch.pca_lowrank(F, q=2)
+    coords = F @ V[:, :2]                                            # [N,2]
+    # 부호 결정론화: 각 성분에서 |loading| 최대 좌표를 양수로 -> 패널 간 미러링 방지
+    for k in range(2):
+        j = V[:, k].abs().argmax()
+        if V[j, k] < 0:
+            coords[:, k] = -coords[:, k]
+    total_var = (F ** 2).sum() / max(F.shape[0] - 1, 1)
+    evr = (S[:2] ** 2 / max(F.shape[0] - 1, 1)) / total_var.clamp_min(1e-12)
+    return coords.numpy(), torch.cat(labels, 0).numpy(), evr.numpy()
+
+
+# ------------------------------------------------------------------ #
+# 9) 예측 캐시 (CNN/ViT 공통) — confusion / 오류겹침 분석의 원천
+# ------------------------------------------------------------------ #
+@torch.no_grad()
+def predict_all(model, loader, device) -> np.ndarray:
+    """test set 전체 argmax 예측 [N] (int8). loader는 shuffle=False 가정."""
+    model.eval()
+    preds = []
+    for x, _ in loader:
+        preds.append(model(x.to(device)).argmax(1).cpu())
+    return torch.cat(preds, 0).numpy().astype(np.int8)

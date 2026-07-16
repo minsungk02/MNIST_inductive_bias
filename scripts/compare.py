@@ -175,6 +175,38 @@ def plot_gap_vs_size(runs):
     fig.savefig(EXP / "compare_train_val_gap_vs_size.png", dpi=130); plt.close(fig)
 
 
+def plot_erf_depth(analyses):
+    """5) ERF RMS 반경 vs 깊이 (CNN vs ViT overlay). CNN 성장 / ViT 평평."""
+    have = [a for a in analyses if a.get("erf_depth")]
+    if not have:
+        return
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for a in have:
+        y = a["erf_depth"]
+        ax.plot(np.linspace(0, 1, len(y)), y, marker="o", label=a["arch"])
+    ax.set_xlabel("relative depth (0=input -> 1=output)")
+    ax.set_ylabel("ERF RMS radius (px)")
+    ax.set_title("Effective receptive field vs depth")
+    ax.legend(); ax.grid(alpha=0.3)
+    fig.tight_layout(); fig.savefig(EXP / "compare_erf_depth.png", dpi=130); plt.close(fig)
+
+
+def plot_freq_response(analyses):
+    """6) 고주파 진폭 비율 vs 깊이. Conv=high-pass(높음) / MSA=low-pass(낮음)."""
+    have = [a for a in analyses if a.get("freq_response")]
+    if not have:
+        return
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for a in have:
+        y = a["freq_response"]
+        ax.plot(np.linspace(0, 1, len(y)), y, marker="o", label=a["arch"])
+    ax.set_xlabel("relative depth (0=input -> 1=output)")
+    ax.set_ylabel("high-freq amplitude fraction")
+    ax.set_title("Frequency response: Conv=high-pass vs MSA=low-pass")
+    ax.legend(); ax.grid(alpha=0.3)
+    fig.tight_layout(); fig.savefig(EXP / "compare_freq_response.png", dpi=130); plt.close(fig)
+
+
 def plot_equivariance(analyses):
     """3) shift 내부표현 변화율 (CNN vs ViT overlay)."""
     have = [a for a in analyses if a.get("equivariance")]
@@ -244,6 +276,8 @@ def main():
     plot_equivariance(analyses)       # 3)
     plot_attention_distance(analyses) # 1)
     plot_erf(analyses)                # 2)
+    plot_erf_depth(analyses)          # 5) ERF vs depth
+    plot_freq_response(analyses)      # 6) 주파수 응답
 
     print_table(runs)
     print("\nsaved -> experiments/compare_{convergence,data_efficiency,robustness}.png")

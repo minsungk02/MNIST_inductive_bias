@@ -151,3 +151,103 @@ def train_val_gap(history: dict) -> dict:
         "gap_at_best": float(tr[be] - va[be]),
         "max_gap": float(np.max(tr - va)),
     }
+
+
+# ------------------------------------------------------------------ #
+# 5) ERF 반경 vs 깊이 (CNN/ViT 공통) — locality가 '쌓이는 과정'
+# ------------------------------------------------------------------ #
+def _block_targets(model, arch: str):
+    """블록별 출력 모듈 리스트 (얕은->깊은)."""
+    if arch == "simple_cnn":
+        seq = model.features                 # Conv-ReLU-Pool ×2 + Conv-ReLU
+        return [seq[2], seq[5], seq[7]]      # pool1[14²], pool2[7²], relu3[7²]
+    return list(model.blocks)                # transformer 블록 ×depth
+
+
+def _erf_rms_radius(erf: np.ndarray) -> float:
+    """ERF 히트맵의 RMS 반경(px). 작을수록 국소, 클수록 넓게 봄."""
+    h, w = erf.shape
+    ys, xs = np.mgrid[0:h, 0:w]
+    m = erf / (erf.sum() + 1e-12)
+    cy, cx = (m * ys).sum(), (m * xs).sum()
+    return float(np.sqrt((m * ((ys - cy) ** 2 + (xs - cx) ** 2)).sum()))
+
+
+def erf_radius_by_depth(model, loader, device, arch, max_batches: int = 20):
+    """블록마다 중앙유닛 ERF를 구해 RMS 반경을 잰다 -> 깊이별 리스트.
+
+    CNN: 작게 시작해 층마다 커짐(국소성이 점진 확장).
+    ViT: 1블록부터 이미 큼(patch-embed + 전역 attention) -> 거의 평평.
+    """
+    model.eval()
+    targets = _block_targets(model, arch)
+    radii = [[] for _ in targets]
+    for bi, (x, _) in enumerate(loader):
+        if bi >= max_batches:
+            break
+        x = x.to(device)
+        for ti, tmod in enumerate(targets):
+            cap = {}
+            hk = tmod.register_forward_hook(lambda m, i, o: cap.__setitem__("f", o))
+            xx = x.clone().requires_grad_(True)
+            model.zero_grad(set_to_none=True)
+            model(xx)
+            hk.remove()
+            f = cap["f"]
+            if arch == "simple_cnn":
+                s = f.shape[-1]
+                scalar = f[:, :, s // 2, s // 2].sum()
+            else:
+                B, T, E = f.shape
+                g = int(round((T - 1) ** 0.5))
+                scalar = f[:, 1:, :].reshape(B, g, g, E)[:, g // 2, g // 2, :].sum()
+            scalar.backward()
+            grad = xx.grad.detach().abs().mean(dim=(0, 1)).cpu().numpy()   # [H,W]
+            radii[ti].append(_erf_rms_radius(grad))
+    return [float(np.mean(r)) for r in radii]
+
+
+# ------------------------------------------------------------------ #
+# 6) 주파수 응답 (CNN/ViT 공통) — Conv=high-pass, MSA=low-pass (Park&Kim 2022)
+# ------------------------------------------------------------------ #
+@torch.no_grad()
+def _highfreq_fraction(fmap: torch.Tensor) -> float:
+    """feature map [B,C,h,w]의 2D FFT에서 고주파(바깥 절반) 진폭 비율."""
+    amp = torch.fft.fftshift(torch.fft.fft2(fmap.float(), norm="ortho"),
+                             dim=(-2, -1)).abs().mean(dim=(0, 1)).cpu()    # [h,w]
+    h, w = amp.shape
+    ys, xs = torch.meshgrid(torch.arange(h), torch.arange(w), indexing="ij")
+    r = torch.sqrt((ys - h // 2).float() ** 2 + (xs - w // 2).float() ** 2)
+    hi = amp[r > 0.5 * r.max()].sum()
+    return float(hi / (amp.sum() + 1e-8))
+
+
+@torch.no_grad()
+def frequency_response(model, loader, device, arch, max_batches: int = 20):
+    """블록별 feature map의 고주파 비율 -> 깊이별 리스트.
+
+    Conv는 엣지(고주파)를 살리고(high-pass), attention은 뭉갠다(low-pass).
+    CNN은 높게/유지, ViT는 낮게 -> 정반대. noise 결과(ViT가 잡음에 약간 강함)의 근거.
+    작은 feature map(7²·4²)이라 해상도는 거칠다(대표값).
+    """
+    model.eval()
+    targets = _block_targets(model, arch)
+    caps = [{} for _ in targets]
+    hooks = [t.register_forward_hook(
+        (lambda c: (lambda m, i, o: c.__setitem__("f", o)))(caps[k]))
+        for k, t in enumerate(targets)]
+    fracs = [[] for _ in targets]
+    for bi, (x, _) in enumerate(loader):
+        if bi >= max_batches:
+            break
+        model(x.to(device))
+        for ti, c in enumerate(caps):
+            f = c["f"]
+            if arch != "simple_cnn":
+                B, T, E = f.shape
+                g = int(round((T - 1) ** 0.5))
+                f = f[:, 1:, :].reshape(B, g, g, E).permute(0, 3, 1, 2)   # [B,E,g,g]
+            fracs[ti].append(_highfreq_fraction(f))
+    for hk in hooks:
+        hk.remove()
+    return [float(np.mean(v)) for v in fracs]

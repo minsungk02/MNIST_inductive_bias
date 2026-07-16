@@ -22,7 +22,8 @@ import torch
 import matplotlib.pyplot as plt
 from torchvision import datasets, transforms
 
-from src.analysis import attention_distance, effective_receptive_field, equivariance_error
+from src.analysis import (attention_distance, effective_receptive_field, equivariance_error,
+                          erf_radius_by_depth, frequency_response)
 from src.config import load_config
 from src.data import get_dataloaders
 from src.models.registry import build_model
@@ -106,6 +107,16 @@ def main():
         fig.tight_layout(); fig.savefig(run_dir / "attention_distance.png", dpi=120); plt.close(fig)
     else:
         analysis["attention_distance"] = None
+
+    # --- 5) ERF 반경 vs 깊이 (both) ---
+    erf_depth = erf_radius_by_depth(model, test_loader, device, arch, args.max_batches)
+    analysis["erf_depth"] = erf_depth
+    print("ERF radius by depth:", [round(v, 2) for v in erf_depth])
+
+    # --- 6) 주파수 응답 (both, Conv=high-pass / MSA=low-pass) ---
+    freq = frequency_response(model, test_loader, device, arch, args.max_batches)
+    analysis["freq_response"] = freq
+    print("high-freq fraction by depth:", [round(v, 3) for v in freq])
 
     with open(run_dir / "analysis.json", "w", encoding="utf-8") as f:
         json.dump(analysis, f, ensure_ascii=False, indent=2)

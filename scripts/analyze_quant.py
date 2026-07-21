@@ -12,13 +12,14 @@
 지표 설명:
   - calibration : 각 예측의 확신도(max softmax) vs 실제 정확도.
                   ECE(Expected Calibration Error)=|정확도-확신도|의 가중평균(클수록 보정 나쁨).
-                  reliability diagram(확신도 대비 실제 정확도) + 확신도 히스토그램(맞음/틀림).
+                  reliability diagram + 확신도 히스토그램(맞음/틀림).
                   -> experiments/compare_calibration.png + <run>/calibration.json
   - shift_errors: clean vs (dx,dy)=(k,k) shift 예측을 비교.
-                  클래스별 clean/shift 정확도 + 'clean 정답 -> shift 오답' 플립 몽타주.
-                  -> experiments/compare_shift_errors.png, experiments/shift_flip_montage.png
+                  클래스별 clean/shift 정확도 + 'clean 정답 -> shift 오답' 예시 이미지 모음.
+                  -> experiments/compare_shift_errors.png, experiments/shift_error_examples.png
 
 섭동 규약은 src/robustness.py와 동일: [0,1]에서 fill=0 shift -> 정규화.
+그림 안 텍스트는 전부 영어(서버 한글 폰트 없어도 안 깨지게), 백엔드는 Agg(헤드리스).
 """
 from __future__ import annotations
 import argparse
@@ -30,7 +31,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import torch
 import torchvision.transforms.functional as TF
+import matplotlib
+matplotlib.use("Agg")                      # 서버(디스플레이 없음)에서 안전
 import matplotlib.pyplot as plt
+plt.rcParams["axes.unicode_minus"] = False  # 마이너스 기호 깨짐 방지
 from torchvision import datasets, transforms
 
 from src.utils import get_device, seed_everything
@@ -99,38 +103,40 @@ def compute_calibration(probs: np.ndarray, labels: np.ndarray, n_bins: int = 15)
 
 
 def _plot_reliability(ax, cal, arch):
-    """reliability diagram: 파란 막대=실제 정확도, 빨간 빗금=과확신 gap, 대각선=완벽 보정."""
+    """reliability diagram: blue bar=actual accuracy, red hatch=overconfidence gap, diagonal=ideal."""
     centers = [b[0] for b in cal["bins"]]
     accs = [b[1] for b in cal["bins"]]
     w = 1.0 / cal["n_bins"]
-    ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.7, label="완벽 보정")
+    ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.7, label="ideal (perfect calib.)")
     ax.bar(centers, accs, width=w, color="tab:blue", alpha=0.85,
-           edgecolor="white", label="실제 정확도")
-    # gap = 확신도(=bin 중심) - 실제 정확도 (양수면 과확신)
+           edgecolor="white", label="actual accuracy")
+    gap_labeled = False
     for cx, acc in zip(centers, accs):
         if not np.isnan(acc) and cx > acc:
             ax.bar(cx, cx - acc, width=w, bottom=acc, color="tab:red",
-                   alpha=0.35, hatch="///", edgecolor="tab:red")
+                   alpha=0.35, hatch="///", edgecolor="tab:red",
+                   label=(None if gap_labeled else "overconfidence gap"))
+            gap_labeled = True
     ax.axvline(cal["mean_conf"], color="tab:orange", lw=2, ls=":",
-               label=f"평균 확신도 {cal['mean_conf']:.2f}")
+               label=f"mean confidence {cal['mean_conf']:.2f}")
     ax.axvline(cal["acc"], color="tab:green", lw=2, ls=":",
-               label=f"정확도 {cal['acc']:.2f}")
+               label=f"accuracy {cal['acc']:.2f}")
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-    ax.set_xlabel("확신도 (max softmax)"); ax.set_ylabel("실제 정확도")
-    ax.set_title(f"{arch.upper()}  ·  ECE = {cal['ece']:.3f}", fontsize=12, fontweight="bold")
+    ax.set_xlabel("confidence (max softmax)"); ax.set_ylabel("actual accuracy")
+    ax.set_title(f"{arch.upper()}   ECE = {cal['ece']:.3f}", fontsize=12, fontweight="bold")
     ax.legend(fontsize=8, loc="upper left"); ax.grid(alpha=0.3)
 
 
 def _plot_conf_hist(ax, cal, arch):
-    """확신도 히스토그램: 맞은 예측(초록) vs 틀린 예측(빨강)."""
+    """confidence histogram: correct (green) vs wrong (red) predictions."""
     bins = np.linspace(0, 1, 26)
     ax.hist(cal["conf_correct"], bins=bins, color="tab:green", alpha=0.6,
-            label=f"맞음 ({len(cal['conf_correct'])})")
+            label=f"correct ({len(cal['conf_correct'])})")
     ax.hist(cal["conf_wrong"], bins=bins, color="tab:red", alpha=0.7,
-            label=f"틀림 ({len(cal['conf_wrong'])})")
-    ax.set_xlim(0, 1); ax.set_xlabel("확신도"); ax.set_ylabel("예측 수 (log)")
+            label=f"wrong ({len(cal['conf_wrong'])})")
+    ax.set_xlim(0, 1); ax.set_xlabel("confidence"); ax.set_ylabel("count (log)")
     ax.set_yscale("log")
-    ax.set_title(f"{arch.upper()} 확신도 분포", fontsize=11)
+    ax.set_title(f"{arch.upper()} confidence distribution", fontsize=11)
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
 
@@ -145,7 +151,7 @@ def run_calibration(run_dirs, device, exp_dir: Path):
         cal = compute_calibration(probs, labels)
         cw = cal["conf_wrong"].mean() if len(cal["conf_wrong"]) else float("nan")
         print(f"{rd.name}: acc={cal['acc']:.4f} | mean_conf={cal['mean_conf']:.4f} | "
-              f"ECE={cal['ece']:.4f} | 틀린예측 평균확신 {cw:.3f}")
+              f"ECE={cal['ece']:.4f} | wrong-pred mean conf {cw:.3f}")
         with open(rd / "calibration.json", "w", encoding="utf-8") as f:
             json.dump({"run": rd.name, "arch": cfg["name"], "ece": cal["ece"],
                        "mean_conf": cal["mean_conf"], "acc": cal["acc"],
@@ -163,7 +169,8 @@ def run_calibration(run_dirs, device, exp_dir: Path):
         for c, arch in enumerate(archs):
             _plot_reliability(axes[0, c], cals[arch], arch)
             _plot_conf_hist(axes[1, c], cals[arch], arch)
-        fig.suptitle("신뢰도(캘리브레이션): 확신도 vs 실제 정확도  —  빨간 빗금 = 과확신 gap, ECE 클수록 보정 나쁨",
+        fig.suptitle("Calibration: confidence vs actual accuracy  "
+                     "(red hatch = overconfidence gap; higher ECE = worse calibration)",
                      fontsize=13)
         fig.tight_layout()
         out = exp_dir / "compare_calibration.png"
@@ -174,7 +181,7 @@ def run_calibration(run_dirs, device, exp_dir: Path):
 # ================================================================== #
 # 2) shift 오류분해
 # ================================================================== #
-def run_shift_errors(run_dirs, device, exp_dir: Path, k: int, n_show: int):
+def run_shift_errors(run_dirs, device, exp_dir: Path, k: int, n_examples: int):
     _, cfg0, _ = load_run(run_dirs[0], "cpu")
     imgs01, labels = load_raw_test(cfg0["data"]["root"])
     shifted01 = TF.affine(imgs01, angle=0.0, translate=[k, k], scale=1.0,
@@ -191,11 +198,11 @@ def run_shift_errors(run_dirs, device, exp_dir: Path, k: int, n_show: int):
         shift_ok = shift_pred == labels
         clean_acc = np.array([clean_ok[labels == c].mean() for c in range(10)])
         shift_acc = np.array([shift_ok[labels == c].mean() for c in range(10)])
-        flip = np.where(clean_ok & ~shift_ok)[0]           # clean 정답 -> shift 오답
+        newly_wrong = np.where(clean_ok & ~shift_ok)[0]     # clean 정답 -> shift 오답
         per_arch[arch] = {"clean_acc": clean_acc, "shift_acc": shift_acc,
-                          "flip_idx": flip, "shift_pred": shift_pred}
+                          "newly_wrong": newly_wrong, "shift_pred": shift_pred}
         print(f"{rd.name}: clean {clean_ok.mean():.3f} -> shift(k={k}) {shift_ok.mean():.3f} "
-              f"| 새로 틀린 예제 {len(flip)}장 ({len(flip)/len(labels)*100:.1f}%)")
+              f"| newly-wrong {len(newly_wrong)} imgs ({len(newly_wrong)/len(labels)*100:.1f}%)")
 
     # --- (A) 클래스별 clean vs shift 정확도 (arch별 패널) ---
     archs = sorted(per_arch)
@@ -207,32 +214,33 @@ def run_shift_errors(run_dirs, device, exp_dir: Path, k: int, n_show: int):
         ax.bar(x - w / 2, d["clean_acc"], w, color="tab:gray", alpha=0.7, label="clean")
         ax.bar(x + w / 2, d["shift_acc"], w, color="tab:red", alpha=0.85,
                label=f"{k}px shift")
-        ax.set_xticks(x); ax.set_xlabel("숫자 클래스"); ax.set_ylim(0, 1)
+        ax.set_xticks(x); ax.set_xlabel("digit class"); ax.set_ylim(0, 1)
         ax.set_title(f"{arch.upper()}: clean {d['clean_acc'].mean():.2f} "
                      f"-> shift {d['shift_acc'].mean():.2f}")
         ax.legend(fontsize=9); ax.grid(alpha=0.3, axis="y")
-    axes[0].set_ylabel("클래스별 정확도")
-    fig.suptitle(f"{k}px 대각 shift에서 어느 숫자가 무너지나 (clean vs shift)", fontsize=13)
+    axes[0].set_ylabel("per-class accuracy")
+    fig.suptitle(f"Which digits collapse under {k}px diagonal shift (clean vs shift)", fontsize=13)
     fig.tight_layout()
     out = exp_dir / "compare_shift_errors.png"
     fig.savefig(out, dpi=130); plt.close(fig)
     print(f"saved -> {out}")
 
-    # --- (B) 'clean 정답 -> shift 오답' 플립 몽타주 (마지막 run 기준, 보통 ViT) ---
+    # --- (B) 'clean 정답 -> shift 오답' 예시 이미지 모음 (마지막 run 기준, 보통 ViT) ---
     tgt = "vit" if "vit" in per_arch else archs[-1]
     d = per_arch[tgt]
-    flips = d["flip_idx"][:n_show]
-    if len(flips):
-        cols = min(n_show, len(flips))
+    ex = d["newly_wrong"][:n_examples]
+    if len(ex):
+        cols = min(n_examples, len(ex))
         fig, axes = plt.subplots(1, cols, figsize=(1.5 * cols, 2.0))
         axes = np.atleast_1d(axes)
-        for ax, idx in zip(axes, flips):
+        for ax, idx in zip(axes, ex):
             ax.imshow(shifted01[idx, 0].numpy(), cmap="gray")
-            ax.set_title(f"{labels[idx]}->{d['shift_pred'][idx]}", fontsize=10, color="tab:red")
+            ax.set_title(f"{labels[idx]} -> {d['shift_pred'][idx]}", fontsize=10, color="tab:red")
             ax.axis("off")
-        fig.suptitle(f"{tgt.upper()}: {k}px 밀었더니 새로 틀린 예 (정답->예측)", fontsize=12)
+        fig.suptitle(f"{tgt.upper()}: correct on clean, WRONG after {k}px shift  (true -> predicted)",
+                     fontsize=12)
         fig.tight_layout()
-        out = exp_dir / "shift_flip_montage.png"
+        out = exp_dir / "shift_error_examples.png"
         fig.savefig(out, dpi=130); plt.close(fig)
         print(f"saved -> {out}")
 
@@ -246,7 +254,8 @@ def main():
     p.add_argument("--all", action="store_true", help="모든 run")
     p.add_argument("--exp-dir", default="./experiments")
     p.add_argument("--shift", type=int, default=4, help="shift_errors 대각 이동 px")
-    p.add_argument("--n-show", type=int, default=10, help="플립 몽타주 표본 수")
+    p.add_argument("--n-examples", type=int, default=10,
+                   help="shift로 새로 틀린 예시 이미지를 몇 장 보여줄지")
     p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 
@@ -261,7 +270,7 @@ def main():
     if args.which == "calibration":
         run_calibration(run_dirs, device, exp_dir)
     else:
-        run_shift_errors(run_dirs, device, exp_dir, args.shift, args.n_show)
+        run_shift_errors(run_dirs, device, exp_dir, args.shift, args.n_examples)
 
 
 if __name__ == "__main__":

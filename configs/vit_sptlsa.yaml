@@ -1,0 +1,14 @@
+_base_: base.yaml
+
+name: vit_sptlsa      # compare.py에서 별도 그룹(3번째 선/행)으로 잡히도록 이름 구분
+
+architecture:
+  type: vit           # 진단 코드(ERF/attention/pos_embed)가 그대로 발동하도록 type은 vit 유지
+  patch_size: 7       # 28/7 = 4 -> 16 patches (+cls = 17 tokens)
+  embed_dim: 64
+  depth: 4
+  heads: 4
+  mlp_ratio: 2.0
+  spt: true           # Shifted Patch Tokenization (이웃 픽셀 정보 주입 -> locality 보완)
+  lsa: true           # Locality Self-Attention (학습 temperature + 대각 마스킹)
+  # pos_embed(절대 위치)는 그대로 -> shift/equivariance는 안 고쳐지는 게 정상(두 병 두 약 검증)
